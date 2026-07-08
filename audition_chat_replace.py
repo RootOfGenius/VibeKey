@@ -160,8 +160,16 @@ def save_app_metadata(metadata):
 
 
 def fetch_json(url, timeout=15):
-    with urllib.request.urlopen(url, timeout=timeout) as response:
+    request = urllib.request.Request(url, headers={"User-Agent": "VibeKey/0.1"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def download_file(url, destination, timeout=60):
+    request = urllib.request.Request(url, headers={"User-Agent": "VibeKey/0.1"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open(destination, "wb") as out:
+            shutil.copyfileobj(response, out)
 
 
 def safe_extract_zip(zip_path, target_dir):
@@ -241,7 +249,7 @@ def update_data_from_github(metadata):
     with tempfile.TemporaryDirectory(prefix="vibekey_update_") as temp_dir:
         temp_dir = Path(temp_dir)
         zip_path = temp_dir / "data_update.zip"
-        urllib.request.urlretrieve(zip_url, zip_path)
+        download_file(zip_url, zip_path)
         extract_dir = temp_dir / "extract"
         extract_dir.mkdir()
         safe_extract_zip(zip_path, extract_dir)

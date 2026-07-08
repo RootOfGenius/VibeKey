@@ -37,10 +37,11 @@ Vi du trong `app_metadata.json`:
 
 ## Manifest Remote
 
-App tai manifest tu GitHub raw URL:
+App tai manifest tu CDN/jsDelivr hoac GitHub raw URL.
+Khuyen dung jsDelivr de giam loi rate-limit HTTP 429 cua `raw.githubusercontent.com`:
 
 ```text
-https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/update_manifest.json
+https://cdn.jsdelivr.net/gh/YOUR_NAME/YOUR_REPO@main/update_manifest.json
 ```
 
 Manifest chi mo ta data update:
