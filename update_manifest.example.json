@@ -1,0 +1,14 @@
+{
+  "latest_data_version": "2026.07.09.2",
+  "data_zip_url": "https://github.com/YOUR_NAME/YOUR_REPO/releases/download/data-2026.07.09.2/vibekey-data.zip",
+  "notes": [
+    "Them pack sticker moi.",
+    "Cap nhat audition_emoji_replace.json."
+  ],
+  "reload_required": true,
+  "restart_required": false,
+  "allowed_paths": [
+    "audition_emoji_replace.json",
+    "audition_stickers/"
+  ]
+}

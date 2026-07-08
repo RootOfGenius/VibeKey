@@ -1,0 +1,15 @@
+{
+  "app_name": "VibeKey",
+  "title": "VibeKey",
+  "window_title": "VibeKey - Audition Emoji",
+  "description": "Tự động chuyển phím tắt thành sticker trong Audition.",
+  "version": "0.1.0",
+  "data_version": "2026.07.09.1",
+  "icon": "assets/app_icon.png",
+  "update": {
+    "enabled": false,
+    "metadata_url": "",
+    "data_zip_url": "",
+    "channel": "stable"
+  }
+}
