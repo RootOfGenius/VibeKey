@@ -2,14 +2,14 @@
   "app_name": "VibeKey",
   "title": "VibeKey",
   "window_title": "VibeKey - Audition Emoji",
-  "description": "Tự động chuyển phím tắt thành sticker trong Audition.",
+  "description": "Tự động chuyển phím tắt thành sticker trong WIA.",
   "version": "0.1.0",
   "data_version": "2026.07.09.1",
   "icon": "assets/app_icon.png",
   "update": {
-    "enabled": false,
-    "metadata_url": "",
-    "data_zip_url": "",
+    "enabled": true,
+    "metadata_url": "https://raw.githubusercontent.com/RootOfGenius/VibeKey/main/update_manifest.json",
+    "data_zip_url": "https://github.com/RootOfGenius/VibeKey/archive/refs/heads/main.zip",
     "channel": "stable"
   }
 }

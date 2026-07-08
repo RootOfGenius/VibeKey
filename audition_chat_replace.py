@@ -2,10 +2,15 @@
 import ctypes
 import ctypes.wintypes as wt
 import json
+import shutil
 import struct
+import tempfile
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.request
+import zipfile
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -145,6 +150,110 @@ def load_app_metadata():
     update = defaults["update"] | data.get("update", {}) if isinstance(data.get("update"), dict) else defaults["update"]
     merged["update"] = update
     return merged
+
+
+def save_app_metadata(metadata):
+    METADATA_FILE.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def fetch_json(url, timeout=15):
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def safe_extract_zip(zip_path, target_dir):
+    target_dir = Path(target_dir).resolve()
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            dest = (target_dir / info.filename).resolve()
+            if target_dir not in dest.parents and dest != target_dir:
+                raise RuntimeError(f"Duong dan khong an toan trong ZIP: {info.filename}")
+        zf.extractall(target_dir)
+
+
+def archive_root(extract_dir):
+    entries = [p for p in Path(extract_dir).iterdir() if p.name not in (".", "..")]
+    if len(entries) == 1 and entries[0].is_dir():
+        return entries[0]
+    return Path(extract_dir)
+
+
+def copy_allowed_update_files(source_root, app_root, allowed_paths):
+    copied = []
+    backup_root = app_root / ".update_backup" / time.strftime("%Y%m%d_%H%M%S")
+    for allowed in allowed_paths:
+        clean = str(allowed).replace("\\", "/").lstrip("/")
+        if not clean or clean.startswith(".."):
+            continue
+
+        src = source_root / clean
+        dst = app_root / clean
+        if not src.exists():
+            continue
+
+        if dst.exists():
+            backup_dst = backup_root / clean
+            backup_dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.is_dir():
+                shutil.copytree(dst, backup_dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(dst, backup_dst)
+
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        copied.append(clean)
+    return copied
+
+
+def update_data_from_github(metadata):
+    update_cfg = metadata.get("update", {})
+    if not update_cfg.get("enabled"):
+        raise RuntimeError("Update dang tat trong app_metadata.json.")
+
+    manifest_url = update_cfg.get("metadata_url", "")
+    if not manifest_url:
+        raise RuntimeError("Chua cau hinh update.metadata_url.")
+
+    manifest = fetch_json(manifest_url)
+    latest_version = str(manifest.get("latest_data_version", ""))
+    local_version = str(metadata.get("data_version", ""))
+    if not latest_version:
+        raise RuntimeError("Manifest thieu latest_data_version.")
+    if latest_version == local_version:
+        return False, f"Data da la ban moi nhat ({local_version})."
+
+    zip_url = manifest.get("data_zip_url") or update_cfg.get("data_zip_url")
+    if not zip_url:
+        raise RuntimeError("Manifest thieu data_zip_url.")
+
+    allowed_paths = manifest.get("allowed_paths") or [
+        "audition_emoji_replace.json",
+        "audition_stickers/",
+    ]
+
+    app_root = Path(__file__).parent
+    with tempfile.TemporaryDirectory(prefix="vibekey_update_") as temp_dir:
+        temp_dir = Path(temp_dir)
+        zip_path = temp_dir / "data_update.zip"
+        urllib.request.urlretrieve(zip_url, zip_path)
+        extract_dir = temp_dir / "extract"
+        extract_dir.mkdir()
+        safe_extract_zip(zip_path, extract_dir)
+        source_root = archive_root(extract_dir)
+        copied = copy_allowed_update_files(source_root, app_root, allowed_paths)
+
+    if not copied:
+        raise RuntimeError("ZIP khong co file data hop le de cap nhat.")
+
+    metadata["data_version"] = latest_version
+    save_app_metadata(metadata)
+    return True, f"Da cap nhat data {local_version} -> {latest_version}."
 
 
 def load_pack_file():
@@ -369,6 +478,10 @@ class App(tk.Tk):
         self.worker = None
         self.status_var = tk.StringVar(value="Đang khởi động...")
         self.mapping_info_var = tk.StringVar(value="Chưa nạp JSON.")
+        self.version_status_var = tk.StringVar(value=self.version_status_text("Chưa kiểm tra"))
+        self.update_button = None
+        self.version_label = None
+        self.data_update_running = False
         self.replaced_count = 0
         self.replaced_count_var = tk.StringVar(value="Đã thay: 0")
 
@@ -389,7 +502,10 @@ class App(tk.Tk):
         style.configure("TLabel", background="#101820", foreground="#f4f7fb")
         style.configure("Panel.TLabel", background="#16232d", foreground="#f4f7fb")
         style.configure("Muted.TLabel", background="#101820", foreground="#a9bac8")
+        style.configure("VersionOk.TLabel", background="#101820", foreground="#8cffb0")
+        style.configure("VersionWarn.TLabel", background="#101820", foreground="#ffd166")
         style.configure("TButton", background="#20313d", foreground="#f4f7fb", padding=(12, 8))
+        style.configure("Small.TButton", background="#20313d", foreground="#f4f7fb", padding=(8, 4))
         style.map("TButton", background=[("active", "#2b4252")])
         style.configure("TCheckbutton", background="#16232d", foreground="#f4f7fb")
         style.map("TCheckbutton", background=[("active", "#16232d")])
@@ -405,12 +521,37 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+    def version_status_text(self, suffix):
+        return (
+            f"App v{self.metadata.get('version', '0.0.0')} | "
+            f"Data {self.metadata.get('data_version', 'unknown')} | {suffix}"
+        )
+
+    def set_version_status(self, suffix, ok=False):
+        self.version_status_var.set(self.version_status_text(suffix))
+        if self.version_label:
+            self.version_label.configure(style="VersionOk.TLabel" if ok else "VersionWarn.TLabel")
+
     def build_ui(self):
         root = ttk.Frame(self, padding=14)
         root.pack(fill="both", expand=True)
 
-        header = f"{self.metadata['title']} v{self.metadata['version']}"
-        ttk.Label(root, text=header, font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        header = ttk.Frame(root)
+        header.pack(fill="x")
+        ttk.Label(header, text=self.metadata["title"], font=("Segoe UI", 16, "bold")).pack(side="left", anchor="w")
+        self.update_button = ttk.Button(
+            header,
+            text="Update",
+            style="Small.TButton",
+            command=self.start_data_update,
+        )
+        self.update_button.pack(side="right")
+        self.version_label = ttk.Label(
+            root,
+            textvariable=self.version_status_var,
+            style="VersionWarn.TLabel",
+        )
+        self.version_label.pack(anchor="w", pady=(2, 0))
         ttk.Label(
             root,
             text=self.metadata["description"],
@@ -652,6 +793,57 @@ class App(tk.Tk):
         except Exception as exc:
             self.mapping_info_var.set(f"Không đọc được JSON: {exc}")
         self.after(800, self.watch_mapping_file)
+
+    def start_data_update(self):
+        self.status_var.set("Đang kiểm tra cập nhật data...")
+        threading.Thread(target=self.update_data_worker, daemon=True).start()
+
+    def update_data_worker(self):
+        try:
+            changed, message = update_data_from_github(self.metadata)
+            self.metadata = load_app_metadata()
+            self.load_mapping(silent=True)
+            self.refresh_sticker_showcase()
+            self.status_var.set(message)
+            if changed:
+                messagebox.showinfo("Cập nhật data", message)
+        except Exception as exc:
+            self.status_var.set(f"Lỗi cập nhật data: {exc}")
+            messagebox.showerror("Lỗi cập nhật data", str(exc))
+
+    def start_data_update(self):
+        if self.data_update_running:
+            return
+        self.data_update_running = True
+        if self.update_button:
+            self.update_button.configure(state="disabled", text="...")
+        self.set_version_status("Đang kiểm tra", ok=False)
+        self.status_var.set("Đang kiểm tra cập nhật data...")
+        threading.Thread(target=self.update_data_worker, daemon=True).start()
+
+    def update_data_worker(self):
+        try:
+            changed, message = update_data_from_github(self.metadata)
+            self.after(0, lambda: self.finish_data_update(True, changed, message))
+        except Exception as exc:
+            self.after(0, lambda exc=exc: self.finish_data_update(False, False, str(exc)))
+
+    def finish_data_update(self, success, changed, message):
+        self.data_update_running = False
+        if self.update_button:
+            self.update_button.configure(state="normal", text="Update")
+        if success:
+            self.metadata = load_app_metadata()
+            self.load_mapping(silent=True)
+            self.refresh_sticker_showcase()
+            self.set_version_status("Mới nhất", ok=True)
+            self.status_var.set(message if not changed else f"{message} Đã reload data.")
+        else:
+            friendly = message
+            if "HTTP Error 429" in message:
+                friendly = "GitHub đang giới hạn request tạm thời (HTTP 429). Hãy thử lại sau."
+            self.set_version_status("Chưa kiểm tra được", ok=False)
+            self.status_var.set(f"Lỗi cập nhật data: {friendly}")
 
     def auto_start(self):
         self.attach(show_error=False)

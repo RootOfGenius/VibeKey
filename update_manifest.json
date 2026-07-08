@@ -1,0 +1,13 @@
+{
+  "latest_data_version": "2026.07.09.1",
+  "data_zip_url": "https://github.com/RootOfGenius/VibeKey/archive/refs/heads/main.zip",
+  "notes": [
+    "Initial data package."
+  ],
+  "reload_required": true,
+  "restart_required": false,
+  "allowed_paths": [
+    "audition_emoji_replace.json",
+    "audition_stickers/"
+  ]
+}

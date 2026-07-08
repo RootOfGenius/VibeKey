@@ -13,3 +13,6 @@ audition_emoji_custom.json
 dist/
 build/
 *.spec
+
+# Data updater backups.
+.update_backup/

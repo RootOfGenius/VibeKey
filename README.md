@@ -84,3 +84,11 @@ Updater trong app chi nen cap nhat data:
 
 Khong nen dung updater data de thay file `.py` hoac `.exe`.
 Neu app/exe thay doi, hay phat hanh GitHub Release moi.
+
+Trong app co nut `Cap nhat data`. Nut nay doc:
+
+```text
+update_manifest.json
+```
+
+tu GitHub raw URL duoc cau hinh trong `app_metadata.json`, sau do tai ZIP va chi copy cac path duoc whitelist trong manifest.
