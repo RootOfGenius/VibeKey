@@ -126,6 +126,64 @@ def c_string(data):
     return data if end < 0 else data[:end]
 
 
+def clean_mapping_value(value):
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return None
+
+    if "bytes_hex" in value:
+        return {"bytes_hex": str(value["bytes_hex"])}
+
+    text = value.get("value", value.get("text"))
+    if text is None:
+        return None
+    encoding = str(value.get("encoding", "cp1258")).lower()
+    return {
+        "value": str(text),
+        "encoding": encoding,
+    }
+
+
+def mapping_target_bytes(target):
+    if isinstance(target, str):
+        return target.encode("cp1258", errors="replace")
+
+    if isinstance(target, dict) and "bytes_hex" in target:
+        return bytes.fromhex(str(target["bytes_hex"]))
+
+    if isinstance(target, dict):
+        text = str(target.get("value", target.get("text", "")))
+        encoding = str(target.get("encoding", "cp1258"))
+        return text.encode(encoding, errors="replace")
+
+    return str(target).encode("cp1258", errors="replace")
+
+
+def display_target(target):
+    if isinstance(target, dict) and "bytes_hex" in target:
+        return f"<bytes {target['bytes_hex']}>"
+    if isinstance(target, dict):
+        return str(target.get("value", target.get("text", "")))
+    return str(target)
+
+
+def custom_target_value(raw_value):
+    value = raw_value.strip()
+    lower = value.lower()
+    if lower.startswith("hex:") or lower.startswith("bytes:"):
+        _, hex_value = value.split(":", 1)
+        bytes.fromhex(hex_value)
+        return {"bytes_hex": " ".join(hex_value.split()).upper()}
+
+    try:
+        value.encode("cp1258")
+        return value
+    except UnicodeEncodeError:
+        value.encode("gbk")
+        return {"value": value, "encoding": "gbk"}
+
+
 def needs_admin_message(exc):
     text = str(exc)
     winerror = getattr(exc, "winerror", None)
@@ -354,11 +412,11 @@ def load_pack_file():
         mapping = pack.get("data", {})
         if not isinstance(mapping, dict):
             continue
-        clean_mapping = {
-            str(key): str(value)
-            for key, value in mapping.items()
-            if isinstance(value, str) and str(key)
-        }
+        clean_mapping = {}
+        for key, value in mapping.items():
+            cleaned = clean_mapping_value(value)
+            if cleaned is not None and str(key):
+                clean_mapping[str(key)] = cleaned
         packs[str(pack_key)] = {
             "label": str(label),
             "data": clean_mapping,
@@ -385,11 +443,11 @@ def load_custom_mapping():
     if not isinstance(mapping, dict):
         mapping = {}
 
-    clean_mapping = {
-        str(key): str(value)
-        for key, value in mapping.items()
-        if isinstance(value, str) and str(key)
-    }
+    clean_mapping = {}
+    for key, value in mapping.items():
+        cleaned = clean_mapping_value(value)
+        if cleaned is not None and str(key):
+            clean_mapping[str(key)] = cleaned
     return {"label": label, "data": clean_mapping}
 
 
@@ -454,9 +512,29 @@ def apply_replace_map(text, mapping):
     for source, target in mapping.items():
         if source and source in new_text:
             count = new_text.count(source)
-            new_text = new_text.replace(source, target)
+            new_text = new_text.replace(source, display_target(target))
             hits.append((source, target, count))
     return new_text, hits
+
+
+def apply_replace_map_bytes(text, mapping):
+    output = bytearray()
+    hits = []
+    index = 0
+    while index < len(text):
+        matched = False
+        for source, target in mapping.items():
+            if source and text.startswith(source, index):
+                output.extend(mapping_target_bytes(target))
+                hits.append((source, target, 1))
+                index += len(source)
+                matched = True
+                break
+        if matched:
+            continue
+        output.extend(text[index].encode("cp1258", errors="replace"))
+        index += 1
+    return bytes(output), hits
 
 
 class AuditionMemory:
@@ -555,6 +633,9 @@ class AuditionMemory:
 
     def write_chat(self, text):
         raw = text.encode("cp1258", errors="replace")
+        return self.write_chat_bytes(raw)
+
+    def write_chat_bytes(self, raw):
         if len(raw) >= BUFFER_SIZE:
             raise ValueError("Text qua dai so voi buffer chat.")
         payload = raw + b"\x00"
@@ -1017,7 +1098,8 @@ class App(tk.Tk):
                 )
                 return
 
-            custom_pack["data"][source] = target
+            replacement = custom_target_value(target)
+            custom_pack["data"][source] = replacement
             save_custom_mapping(custom_pack)
             if CUSTOM_PACK_KEY in self.priority_order:
                 self.priority_order.remove(CUSTOM_PACK_KEY)
@@ -1028,7 +1110,7 @@ class App(tk.Tk):
             self.clear_entry_placeholder(self.custom_key_entry)
             self.clear_entry_placeholder(self.custom_value_entry)
             self.load_mapping(silent=False)
-            self.status_var.set(f"Đã thêm custom: {source} -> {target}")
+            self.status_var.set(f"Đã thêm custom: {source} -> {display_target(replacement)}")
         except Exception as exc:
             messagebox.showerror("Lỗi custom", str(exc))
 
@@ -1306,9 +1388,9 @@ class App(tk.Tk):
         try:
             self.ensure_attached()
             text = self.mem.read_chat()
-            new_text, hits = apply_replace_map(text, self.replace_map)
+            new_bytes, hits = apply_replace_map_bytes(text, self.replace_map)
             if hits:
-                self.mem.write_chat(new_text)
+                self.mem.write_chat_bytes(new_bytes)
                 self.replaced_count += sum(hit[2] for hit in hits)
                 self.status_var.set(f"Đã thay {len(hits)} loại key.")
         except Exception as exc:
@@ -1321,9 +1403,9 @@ class App(tk.Tk):
                 try:
                     self.ensure_attached()
                     text = self.mem.read_chat()
-                    new_text, hits = apply_replace_map(text, self.replace_map)
-                    if hits and new_text != text:
-                        self.mem.write_chat(new_text)
+                    new_bytes, hits = apply_replace_map_bytes(text, self.replace_map)
+                    if hits:
+                        self.mem.write_chat_bytes(new_bytes)
                         self.replaced_count += sum(hit[2] for hit in hits)
                     if not self.game_connected:
                         self.set_game_connected()
