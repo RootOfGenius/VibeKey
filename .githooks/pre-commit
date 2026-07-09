@@ -1,0 +1,2 @@
+#!/bin/sh
+python scripts/bump_data_version.py

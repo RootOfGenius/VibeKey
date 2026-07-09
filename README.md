@@ -51,3 +51,13 @@ Bấm `Update` để tải bộ sticker/mapping mới nhất. Dữ liệu custom
 - Nếu app báo chưa kết nối được game, hãy chuột phải vào `VibeKey.exe` và chọn `Run as administrator`.
 - App chỉ hỗ trợ bản Audition có địa chỉ chat tương thích.
 - Không cần cài Git hay Python nếu bạn dùng bản `.exe`.
+
+## Dành cho người đóng góp data
+
+Nếu bạn sửa sticker hoặc mapping bằng source, hãy bật hook trước khi commit:
+
+```powershell
+.\install_hooks.ps1
+```
+
+Hook này sẽ tự cập nhật `data_version` khi bạn commit thay đổi trong `audition_emoji_replace.json` hoặc `audition_stickers/`.

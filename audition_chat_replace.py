@@ -132,6 +132,7 @@ def load_app_metadata():
         "title": "VibeKey",
         "window_title": "VibeKey - Audition Emoji",
         "description": "Tự động chuyển phím tắt thành sticker trong Audition.",
+        "author": "Louis Gin",
         "version": "0.1.0",
         "icon": "assets/app_icon.png",
         "update": {
@@ -609,7 +610,12 @@ class App(tk.Tk):
             root,
             text=self.metadata["description"],
             style="Muted.TLabel",
-        ).pack(anchor="w", pady=(4, 4))
+        ).pack(anchor="w", pady=(4, 2))
+        ttk.Label(
+            root,
+            text=f"Author: {self.metadata.get('author', 'Louis Gin')}",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 4))
         self.game_status_label = ttk.Label(
             root,
             textvariable=self.game_status_var,
