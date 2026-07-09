@@ -33,6 +33,7 @@ CUSTOM_MAPPING_FILE = APP_ROOT / "audition_emoji_custom.json"
 CUSTOM_PACK_KEY = "custom"
 STICKER_ROOT = APP_ROOT / "audition_stickers"
 METADATA_FILE = APP_ROOT / "app_metadata.json"
+SETTINGS_FILE = APP_ROOT / "vibekey_settings.json"
 
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010
@@ -399,13 +400,51 @@ def save_custom_mapping(custom_pack):
     )
 
 
-def build_replace_map(packs, preferred_pack_key):
+def load_settings():
+    if not SETTINGS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_settings(settings):
+    SETTINGS_FILE.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def normalized_priority_order(packs, saved_order=None):
+    saved_order = saved_order or []
+    order = [pack_key for pack_key in saved_order if pack_key in packs]
+    for pack_key in packs:
+        if pack_key not in order:
+            order.append(pack_key)
+    if CUSTOM_PACK_KEY in order:
+        order.remove(CUSTOM_PACK_KEY)
+        order.insert(0, CUSTOM_PACK_KEY)
+    return order
+
+
+def normalized_enabled_packs(packs, saved_enabled=None):
+    if saved_enabled is None:
+        return list(packs.keys())
+    enabled = [pack_key for pack_key in saved_enabled if pack_key in packs]
+    if CUSTOM_PACK_KEY in packs and CUSTOM_PACK_KEY not in enabled:
+        enabled.insert(0, CUSTOM_PACK_KEY)
+    return enabled
+
+
+def build_replace_map(packs, priority_order, enabled_pack_keys=None):
     mapping = {}
-    for pack_key, pack in packs.items():
-        if pack_key != preferred_pack_key:
-            mapping.update(pack["data"])
-    if preferred_pack_key in packs:
-        mapping.update(packs[preferred_pack_key]["data"])
+    enabled = set(normalized_enabled_packs(packs, enabled_pack_keys))
+    for pack_key in reversed(normalized_priority_order(packs, priority_order)):
+        if pack_key not in enabled:
+            continue
+        mapping.update(packs[pack_key]["data"])
     return dict(sorted(mapping.items(), key=lambda item: len(item[0]), reverse=True))
 
 
@@ -536,15 +575,17 @@ class App(tk.Tk):
         self.packs = {}
         self.replace_map = {}
         self.pack_labels = {}
-        self.pack_select_var = tk.StringVar()
         self.sticker_set_var = tk.StringVar()
         self.sticker_images = []
         self.sticker_grid = None
+        self.priority_listbox = None
         self.custom_key_var = tk.StringVar()
         self.custom_value_var = tk.StringVar()
         self.custom_key_entry = None
         self.custom_value_entry = None
-        self.selected_pack_key = None
+        self.settings = load_settings()
+        self.priority_order = []
+        self.enabled_pack_keys = []
         self.mapping_mtime = None
         self.custom_mtime = None
         self.running = tk.BooleanVar(value=True)
@@ -662,17 +703,34 @@ class App(tk.Tk):
         panel = ttk.Frame(root, style="Panel.TFrame", padding=12)
         panel.pack(fill="both", expand=True)
 
-        ttk.Label(panel, text="Gói ưu tiên", style="Panel.TLabel").grid(
+        ttk.Label(panel, text="Thứ tự ưu tiên", style="Panel.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 6)
         )
-        self.pack_combo = ttk.Combobox(
-            panel,
-            textvariable=self.pack_select_var,
-            state="readonly",
-            width=28,
+        priority_frame = ttk.Frame(panel, style="Panel.TFrame")
+        priority_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self.priority_listbox = tk.Listbox(
+            priority_frame,
+            height=6,
+            bg="#101820",
+            fg="#f4f7fb",
+            selectbackground="#2b4252",
+            selectforeground="#ffffff",
+            highlightthickness=1,
+            highlightbackground="#2f4352",
+            activestyle="none",
+            exportselection=False,
         )
-        self.pack_combo.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        self.pack_combo.bind("<<ComboboxSelected>>", self.on_pack_selected)
+        self.priority_listbox.grid(row=0, column=0, rowspan=3, sticky="nsew", padx=(0, 8))
+        ttk.Button(priority_frame, text="Lên", style="Small.TButton", command=lambda: self.move_priority(-1)).grid(
+            row=0, column=1, sticky="ew", pady=(0, 4)
+        )
+        ttk.Button(priority_frame, text="Xuống", style="Small.TButton", command=lambda: self.move_priority(1)).grid(
+            row=1, column=1, sticky="ew", pady=(0, 4)
+        )
+        ttk.Button(priority_frame, text="Bật/tắt", style="Small.TButton", command=self.toggle_selected_pack).grid(
+            row=2, column=1, sticky="ew"
+        )
+        priority_frame.columnconfigure(0, weight=1)
         ttk.Label(panel, textvariable=self.mapping_info_var, style="Panel.TLabel").grid(
             row=2, column=0, sticky="w", pady=4
         )
@@ -740,39 +798,38 @@ class App(tk.Tk):
 
     def load_mapping(self, silent=False):
         try:
-            previous_key = self.selected_pack_key
             self.packs = load_pack_file()
             self.packs[CUSTOM_PACK_KEY] = load_custom_mapping()
             self.mapping_mtime = MAPPING_FILE.stat().st_mtime
             self.custom_mtime = CUSTOM_MAPPING_FILE.stat().st_mtime
 
-            if previous_key not in self.packs:
-                previous_key = next(iter(self.packs))
-            self.selected_pack_key = previous_key
-
             self.pack_labels = {
                 pack_key: f"{pack['label']} ({pack_key})"
                 for pack_key, pack in self.packs.items()
             }
-            self.replace_map = build_replace_map(self.packs, self.selected_pack_key)
+            self.priority_order = normalized_priority_order(
+                self.packs,
+                self.settings.get("priority_order", self.priority_order),
+            )
+            self.enabled_pack_keys = normalized_enabled_packs(
+                self.packs,
+                self.settings.get("enabled_pack_keys", self.enabled_pack_keys or None),
+            )
+            self.replace_map = build_replace_map(self.packs, self.priority_order, self.enabled_pack_keys)
 
-            if hasattr(self, "pack_combo"):
-                values = [self.pack_labels[key] for key in self.packs]
-                self.pack_combo["values"] = values
-                self.pack_select_var.set(self.pack_labels[self.selected_pack_key])
+            if hasattr(self, "priority_listbox") and self.priority_listbox:
+                self.refresh_priority_listbox()
             if hasattr(self, "sticker_combo"):
                 values = [self.pack_labels[key] for key in self.packs]
                 current_sticker = self.sticker_set_var.get()
                 self.sticker_combo["values"] = values
                 if current_sticker not in values:
-                    self.sticker_set_var.set(self.pack_labels[self.selected_pack_key])
+                    first_pack = self.priority_order[0] if self.priority_order else next(iter(self.packs))
+                    self.sticker_set_var.set(self.pack_labels[first_pack])
                 self.refresh_sticker_showcase()
 
             if hasattr(self, "mapping_info_var"):
-                selected_label = self.packs[self.selected_pack_key]["label"]
-                self.mapping_info_var.set(
-                    f"{len(self.replace_map)} mẫu / {len(self.packs)} gói. Ưu tiên: {selected_label}"
-                )
+                self.update_mapping_info()
             if not silent:
                 self.status_var.set("Đã tự nạp lại JSON.")
         except Exception as exc:
@@ -784,18 +841,81 @@ class App(tk.Tk):
             if not silent:
                 messagebox.showerror("Lỗi JSON", str(exc))
 
-    def on_pack_selected(self, _event=None):
-        selected_label = self.pack_select_var.get()
-        for pack_key, label in self.pack_labels.items():
-            if label == selected_label:
-                self.selected_pack_key = pack_key
-                self.replace_map = build_replace_map(self.packs, self.selected_pack_key)
-                selected_name = self.packs[pack_key]["label"]
-                self.mapping_info_var.set(
-                    f"{len(self.replace_map)} mẫu / {len(self.packs)} gói. Ưu tiên: {selected_name}"
-                )
-                self.status_var.set("Đã đổi gói ưu tiên.")
+    def refresh_priority_listbox(self):
+        if not self.priority_listbox:
+            return
+        selected = self.priority_listbox.curselection()
+        selected_index = selected[0] if selected else 0
+        self.priority_listbox.delete(0, "end")
+        for index, pack_key in enumerate(self.priority_order, start=1):
+            marker = "✓" if pack_key in self.enabled_pack_keys else "○"
+            self.priority_listbox.insert("end", f"{marker} {index}. {self.pack_labels[pack_key]}")
+        if self.priority_order:
+            selected_index = min(selected_index, len(self.priority_order) - 1)
+            self.priority_listbox.selection_set(selected_index)
+
+    def update_mapping_info(self):
+        enabled_order = [pack_key for pack_key in self.priority_order if pack_key in self.enabled_pack_keys]
+        top_key = enabled_order[0] if enabled_order else None
+        top_label = self.packs[top_key]["label"] if top_key in self.packs else "--"
+        self.mapping_info_var.set(
+            f"{len(self.replace_map)} mẫu / {len(self.enabled_pack_keys)}/{len(self.packs)} gói bật. Ưu tiên cao nhất: {top_label}"
+        )
+
+    def save_user_settings(self):
+        self.settings["priority_order"] = self.priority_order
+        self.settings["enabled_pack_keys"] = self.enabled_pack_keys
+        save_settings(self.settings)
+
+    def move_priority(self, direction):
+        if not self.priority_listbox or not self.priority_order:
+            return
+        selected = self.priority_listbox.curselection()
+        if not selected:
+            return
+        index = selected[0]
+        new_index = index + direction
+        if new_index < 0 or new_index >= len(self.priority_order):
+            return
+        self.priority_order[index], self.priority_order[new_index] = (
+            self.priority_order[new_index],
+            self.priority_order[index],
+        )
+        self.save_user_settings()
+        self.replace_map = build_replace_map(self.packs, self.priority_order, self.enabled_pack_keys)
+        self.refresh_priority_listbox()
+        self.priority_listbox.selection_clear(0, "end")
+        self.priority_listbox.selection_set(new_index)
+        self.priority_listbox.see(new_index)
+        self.update_mapping_info()
+        self.status_var.set("Đã đổi thứ tự ưu tiên.")
+
+    def toggle_selected_pack(self):
+        if not self.priority_listbox or not self.priority_order:
+            return
+        selected = self.priority_listbox.curselection()
+        if not selected:
+            return
+        index = selected[0]
+        pack_key = self.priority_order[index]
+        if pack_key == CUSTOM_PACK_KEY:
+            self.status_var.set("Custom luôn được bật để ưu tiên mapping của bạn.")
+            return
+        if pack_key in self.enabled_pack_keys:
+            if len(self.enabled_pack_keys) <= 1:
+                messagebox.showwarning("Không thể tắt", "Cần bật ít nhất 1 gói emoji.")
                 return
+            self.enabled_pack_keys.remove(pack_key)
+            self.status_var.set(f"Đã tắt: {self.packs[pack_key]['label']}")
+        else:
+            self.enabled_pack_keys.append(pack_key)
+            self.status_var.set(f"Đã bật: {self.packs[pack_key]['label']}")
+        self.save_user_settings()
+        self.replace_map = build_replace_map(self.packs, self.priority_order, self.enabled_pack_keys)
+        self.refresh_priority_listbox()
+        self.priority_listbox.selection_clear(0, "end")
+        self.priority_listbox.selection_set(index)
+        self.update_mapping_info()
 
     def on_sticker_set_selected(self, _event=None):
         self.refresh_sticker_showcase()
@@ -805,7 +925,7 @@ class App(tk.Tk):
         for pack_key, label in self.pack_labels.items():
             if label == selected_label:
                 return pack_key
-        return self.selected_pack_key
+        return self.priority_order[0] if self.priority_order else None
 
     def refresh_sticker_showcase(self):
         if not self.sticker_grid:
@@ -899,7 +1019,12 @@ class App(tk.Tk):
 
             custom_pack["data"][source] = target
             save_custom_mapping(custom_pack)
-            self.selected_pack_key = CUSTOM_PACK_KEY
+            if CUSTOM_PACK_KEY in self.priority_order:
+                self.priority_order.remove(CUSTOM_PACK_KEY)
+            self.priority_order.insert(0, CUSTOM_PACK_KEY)
+            if CUSTOM_PACK_KEY not in self.enabled_pack_keys:
+                self.enabled_pack_keys.insert(0, CUSTOM_PACK_KEY)
+            self.save_user_settings()
             self.clear_entry_placeholder(self.custom_key_entry)
             self.clear_entry_placeholder(self.custom_value_entry)
             self.load_mapping(silent=False)
