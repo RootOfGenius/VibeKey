@@ -1,94 +1,53 @@
 # VibeKey
 
-VibeKey la tool nho cho Audition, tu dong doi phim tat emoji trong o chat sang ma sticker tuong ung.
+VibeKey là công cụ nhỏ giúp đổi phím tắt emoji trong Audition sang mã sticker tương ứng.
 
-Vi du:
-
-```text
-;haha -> &^_^&
-```
-
-## Chay App Tu Source
-
-Mo PowerShell bang quyen Administrator:
-
-```powershell
-cd E:\DragonBankin\VibeKey
-python audition_chat_replace.py
-```
-
-Khi build thanh `.exe`, nguoi dung chi can chay file exe bang quyen Administrator.
-
-## Cau Truc Data
-
-Mapping chinh nam trong:
+Ví dụ:
 
 ```text
-audition_emoji_replace.json
+;haha → &^_^&
 ```
 
-Moi pack co dang:
+## Tính năng
 
-```json
-{
-  "emoji_basic": {
-    "label": "Emoji co ban",
-    "data": {
-      ";haha": "&^_^&"
-    }
-  }
-}
-```
+- Tự động thay phím tắt emoji trong ô chat Audition.
+- Hỗ trợ nhiều bộ sticker.
+- Xem trước sticker kèm key tương ứng.
+- Cho phép tự thêm mapping riêng.
+- Có thể cập nhật dữ liệu sticker/mapping mới từ GitHub.
 
-Mapping nguoi dung tu them se duoc ghi vao:
+## Cách sử dụng
+
+1. Mở Audition.
+2. Chạy `VibeKey.exe` bằng quyền Administrator.
+3. Chọn bộ sticker ưu tiên nếu muốn.
+4. Gõ key trong ô chat Audition, ví dụ:
 
 ```text
-audition_emoji_custom.json
+;haha
 ```
 
-File nay duoc ignore khoi Git de tranh ghi de du lieu rieng cua nguoi dung.
+VibeKey sẽ tự đổi sang mã sticker tương ứng.
 
-## Metadata
+## Thêm mapping riêng
 
-Ten app, mo ta, app version, data version va icon nam trong:
+Ở phần tùy chỉnh, nhập:
 
-```text
-app_metadata.json
-```
+- `Key`: phím tắt bạn muốn gõ, ví dụ `;cuoi`
+- `Giá trị`: mã sticker muốn thay, ví dụ `&^_^&`
 
-`version` la version cua app/exe.
-`data_version` la version cua bo sticker/mapping.
+Sau đó bấm `Thêm custom`.
 
-## Sticker
+Mapping tự thêm sẽ được lưu riêng và không bị mất khi cập nhật dữ liệu.
 
-Icon sticker nam trong:
+## Cập nhật dữ liệu
 
-```text
-audition_stickers/<pack_key>/
-```
+Nếu có dữ liệu mới, VibeKey sẽ hiển thị nút `Update`.
 
-Ten file icon theo thu tu:
+Bấm `Update` để tải bộ sticker/mapping mới nhất. Dữ liệu custom của bạn vẫn được giữ lại.
 
-```text
-01.png, 02.png, ... 40.png
-```
+## Lưu ý
 
-Thu tu icon tuong ung voi thu tu key trong `data`.
-
-## Update
-
-Updater trong app chi nen cap nhat data:
-
-- `audition_emoji_replace.json`
-- `audition_stickers/**`
-
-Khong nen dung updater data de thay file `.py` hoac `.exe`.
-Neu app/exe thay doi, hay phat hanh GitHub Release moi.
-
-Trong app co nut `Cap nhat data`. Nut nay doc:
-
-```text
-update_manifest.json
-```
-
-tu GitHub raw URL duoc cau hinh trong `app_metadata.json`, sau do tai ZIP va chi copy cac path duoc whitelist trong manifest.
+- Nếu app báo chưa kết nối được game, hãy chuột phải vào `VibeKey.exe` và chọn `Run as administrator`.
+- App chỉ hỗ trợ bản Audition có địa chỉ chat tương thích.
+- Không cần cài Git hay Python nếu bạn dùng bản `.exe`.

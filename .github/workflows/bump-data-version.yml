@@ -1,0 +1,73 @@
+name: Bump data version
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "audition_emoji_replace.json"
+      - "audition_stickers/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bump-data-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update metadata and manifest
+        shell: python
+        run: |
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          run_number = os.environ["GITHUB_RUN_NUMBER"]
+          data_version = datetime.now(timezone.utc).strftime("%Y.%m.%d") + f".{run_number}"
+
+          metadata_path = Path("app_metadata.json")
+          manifest_path = Path("update_manifest.json")
+
+          metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+          metadata["data_version"] = data_version
+          metadata_path.write_text(
+              json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          manifest = {}
+          if manifest_path.exists():
+              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+          manifest["latest_data_version"] = data_version
+          manifest.setdefault(
+              "data_zip_url",
+              "https://github.com/RootOfGenius/VibeKey/archive/refs/heads/main.zip",
+          )
+          manifest.setdefault("notes", ["Data package update."])
+          manifest["reload_required"] = True
+          manifest["restart_required"] = False
+          manifest["allowed_paths"] = [
+              "audition_emoji_replace.json",
+              "audition_stickers/",
+          ]
+          manifest_path.write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          print(f"DATA_VERSION={data_version}")
+
+      - name: Commit version bump
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(data): bump data version [skip ci]"
+          file_pattern: app_metadata.json update_manifest.json

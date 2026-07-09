@@ -4,6 +4,7 @@ import ctypes.wintypes as wt
 import json
 import shutil
 import struct
+import sys
 import tempfile
 import threading
 import time
@@ -19,11 +20,12 @@ PROCESS_NAME = "Audition.exe"
 CHAT_OFFSET = 0x461EB20
 BUFFER_SIZE = 512
 POLL_SECONDS = 0.03
-MAPPING_FILE = Path(__file__).with_name("audition_emoji_replace.json")
-CUSTOM_MAPPING_FILE = Path(__file__).with_name("audition_emoji_custom.json")
+APP_ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+MAPPING_FILE = APP_ROOT / "audition_emoji_replace.json"
+CUSTOM_MAPPING_FILE = APP_ROOT / "audition_emoji_custom.json"
 CUSTOM_PACK_KEY = "custom"
-STICKER_ROOT = Path(__file__).with_name("audition_stickers")
-METADATA_FILE = Path(__file__).with_name("app_metadata.json")
+STICKER_ROOT = APP_ROOT / "audition_stickers"
+METADATA_FILE = APP_ROOT / "app_metadata.json"
 
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010
@@ -114,6 +116,14 @@ def find_pid(process_name):
 def c_string(data):
     end = data.find(b"\x00")
     return data if end < 0 else data[:end]
+
+
+def needs_admin_message(exc):
+    text = str(exc)
+    winerror = getattr(exc, "winerror", None)
+    if winerror == 5 or "WinError 5" in text or "Access is denied" in text:
+        return "Cần quyền admin. Chuột phải chọn Run as administrator."
+    return None
 
 
 def load_app_metadata():
@@ -234,7 +244,7 @@ def update_data_from_github(metadata):
     if not latest_version:
         raise RuntimeError("Manifest thieu latest_data_version.")
     if latest_version == local_version:
-        return False, f"Data da la ban moi nhat ({local_version})."
+        return False, ""
 
     zip_url = manifest.get("data_zip_url") or update_cfg.get("data_zip_url")
     if not zip_url:
@@ -245,7 +255,7 @@ def update_data_from_github(metadata):
         "audition_stickers/",
     ]
 
-    app_root = Path(__file__).parent
+    app_root = APP_ROOT
     with tempfile.TemporaryDirectory(prefix="vibekey_update_") as temp_dir:
         temp_dir = Path(temp_dir)
         zip_path = temp_dir / "data_update.zip"
@@ -262,6 +272,23 @@ def update_data_from_github(metadata):
     metadata["data_version"] = latest_version
     save_app_metadata(metadata)
     return True, f"Da cap nhat data {local_version} -> {latest_version}."
+
+
+def check_update_available(metadata):
+    update_cfg = metadata.get("update", {})
+    if not update_cfg.get("enabled"):
+        return False, "Update dang tat."
+
+    manifest_url = update_cfg.get("metadata_url", "")
+    if not manifest_url:
+        return False, "Chua cau hinh metadata_url."
+
+    manifest = fetch_json(manifest_url)
+    latest_version = str(manifest.get("latest_data_version", ""))
+    local_version = str(metadata.get("data_version", ""))
+    if not latest_version:
+        raise RuntimeError("Manifest thieu latest_data_version.")
+    return latest_version != local_version, latest_version
 
 
 def load_pack_file():
@@ -478,13 +505,19 @@ class App(tk.Tk):
         self.sticker_grid = None
         self.custom_key_var = tk.StringVar()
         self.custom_value_var = tk.StringVar()
+        self.custom_key_entry = None
+        self.custom_value_entry = None
         self.selected_pack_key = None
         self.mapping_mtime = None
         self.custom_mtime = None
         self.running = tk.BooleanVar(value=True)
         self.stop_event = threading.Event()
         self.worker = None
-        self.status_var = tk.StringVar(value="Đang khởi động...")
+        self.status_var = tk.StringVar(value="")
+        self.game_status_var = tk.StringVar(value="Trạng thái: ⠋ Chờ kết nối game")
+        self.game_status_label = None
+        self.game_connected = False
+        self.spinner_index = 0
         self.mapping_info_var = tk.StringVar(value="Chưa nạp JSON.")
         self.version_status_var = tk.StringVar(value=self.version_status_text("Chưa kiểm tra"))
         self.update_button = None
@@ -498,6 +531,7 @@ class App(tk.Tk):
         self.build_ui()
         self.load_mapping(silent=True)
         self.after(250, self.auto_start)
+        self.after(180, self.animate_game_status)
         self.after(800, self.watch_mapping_file)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -512,6 +546,8 @@ class App(tk.Tk):
         style.configure("Muted.TLabel", background="#101820", foreground="#a9bac8")
         style.configure("VersionOk.TLabel", background="#101820", foreground="#8cffb0")
         style.configure("VersionWarn.TLabel", background="#101820", foreground="#ffd166")
+        style.configure("GameOk.TLabel", background="#101820", foreground="#8cffb0")
+        style.configure("GameWait.TLabel", background="#101820", foreground="#ffd166")
         style.configure("TButton", background="#20313d", foreground="#f4f7fb", padding=(12, 8))
         style.configure("Small.TButton", background="#20313d", foreground="#f4f7fb", padding=(8, 4))
         style.map("TButton", background=[("active", "#2b4252")])
@@ -522,7 +558,7 @@ class App(tk.Tk):
     def apply_window_icon(self):
         icon_path = Path(str(self.metadata.get("icon", "")))
         if not icon_path.is_absolute():
-            icon_path = Path(__file__).parent / icon_path
+            icon_path = APP_ROOT / icon_path
         if icon_path.exists():
             try:
                 self.iconphoto(True, tk.PhotoImage(file=str(icon_path)))
@@ -531,7 +567,7 @@ class App(tk.Tk):
 
     def version_status_text(self, suffix):
         return (
-            f"App v{self.metadata.get('version', '0.0.0')} | "
+            f"Version v{self.metadata.get('version', '0.0.0')} | "
             f"Data {self.metadata.get('data_version', 'unknown')} | {suffix}"
         )
 
@@ -539,6 +575,16 @@ class App(tk.Tk):
         self.version_status_var.set(self.version_status_text(suffix))
         if self.version_label:
             self.version_label.configure(style="VersionOk.TLabel" if ok else "VersionWarn.TLabel")
+
+    def show_update_button(self, show):
+        if not self.update_button:
+            return
+        if show:
+            if not self.update_button.winfo_ismapped():
+                self.update_button.pack(side="right")
+        else:
+            if self.update_button.winfo_ismapped():
+                self.update_button.pack_forget()
 
     def build_ui(self):
         root = ttk.Frame(self, padding=14)
@@ -553,7 +599,6 @@ class App(tk.Tk):
             style="Small.TButton",
             command=self.start_data_update,
         )
-        self.update_button.pack(side="right")
         self.version_label = ttk.Label(
             root,
             textvariable=self.version_status_var,
@@ -564,7 +609,13 @@ class App(tk.Tk):
             root,
             text=self.metadata["description"],
             style="Muted.TLabel",
-        ).pack(anchor="w", pady=(4, 12))
+        ).pack(anchor="w", pady=(4, 4))
+        self.game_status_label = ttk.Label(
+            root,
+            textvariable=self.game_status_var,
+            style="GameWait.TLabel",
+        )
+        self.game_status_label.pack(anchor="w", pady=(0, 12))
 
         panel = ttk.Frame(root, style="Panel.TFrame", padding=12)
         panel.pack(fill="both", expand=True)
@@ -586,9 +637,11 @@ class App(tk.Tk):
         custom = ttk.Frame(panel, style="Panel.TFrame")
         custom.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         ttk.Label(custom, text="Key", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(custom, textvariable=self.custom_key_var, width=14).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        self.custom_key_entry = ttk.Entry(custom, width=14)
+        self.custom_key_entry.grid(row=1, column=0, sticky="ew", padx=(0, 8))
         ttk.Label(custom, text="Giá trị", style="Panel.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Entry(custom, textvariable=self.custom_value_var, width=18).grid(row=1, column=1, sticky="ew", padx=(0, 8))
+        self.custom_value_entry = ttk.Entry(custom, width=18)
+        self.custom_value_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8))
         ttk.Button(custom, text="Thêm custom", command=self.add_custom_mapping).grid(
             row=1, column=2, sticky="ew"
         )
@@ -598,10 +651,9 @@ class App(tk.Tk):
         ttk.Label(panel, textvariable=self.status_var, style="Panel.TLabel", wraplength=380).grid(
             row=4, column=0, sticky="w", pady=(12, 4)
         )
-        ttk.Label(panel, textvariable=self.replaced_count_var, style="Panel.TLabel").grid(
-            row=5, column=0, sticky="w", pady=(10, 0)
-        )
         panel.columnconfigure(0, weight=1)
+        self.setup_entry_placeholder(self.custom_key_entry, "Ví dụ: ;haha")
+        self.setup_entry_placeholder(self.custom_value_entry, "Ví dụ: &^_^&")
 
         showcase = ttk.Frame(root, style="Panel.TFrame", padding=12)
         showcase.pack(fill="both", expand=True, pady=(12, 0))
@@ -750,9 +802,43 @@ class App(tk.Tk):
         for col in range(columns):
             self.sticker_grid.columnconfigure(col, weight=1)
 
+    def setup_entry_placeholder(self, entry, placeholder):
+        entry.placeholder = placeholder
+        entry.is_placeholder = True
+        entry.insert(0, placeholder)
+        entry.configure(foreground="#777777")
+
+        def on_focus_in(_event):
+            if getattr(entry, "is_placeholder", False):
+                entry.delete(0, "end")
+                entry.configure(foreground="#111111")
+                entry.is_placeholder = False
+
+        def on_focus_out(_event):
+            if not entry.get().strip():
+                entry.insert(0, placeholder)
+                entry.configure(foreground="#777777")
+                entry.is_placeholder = True
+
+        entry.bind("<FocusIn>", on_focus_in)
+        entry.bind("<FocusOut>", on_focus_out)
+
+    def entry_value(self, entry):
+        if not entry or getattr(entry, "is_placeholder", False):
+            return ""
+        return entry.get().strip()
+
+    def clear_entry_placeholder(self, entry):
+        if not entry:
+            return
+        entry.delete(0, "end")
+        entry.insert(0, entry.placeholder)
+        entry.configure(foreground="#777777")
+        entry.is_placeholder = True
+
     def add_custom_mapping(self):
-        source = self.custom_key_var.get().strip()
-        target = self.custom_value_var.get().strip()
+        source = self.entry_value(self.custom_key_entry)
+        target = self.entry_value(self.custom_value_entry)
         if not source:
             messagebox.showwarning("Thiếu key", "Bạn cần nhập key, ví dụ ;win.")
             return
@@ -772,8 +858,8 @@ class App(tk.Tk):
             custom_pack["data"][source] = target
             save_custom_mapping(custom_pack)
             self.selected_pack_key = CUSTOM_PACK_KEY
-            self.custom_key_var.set("")
-            self.custom_value_var.set("")
+            self.clear_entry_placeholder(self.custom_key_entry)
+            self.clear_entry_placeholder(self.custom_value_entry)
             self.load_mapping(silent=False)
             self.status_var.set(f"Đã thêm custom: {source} -> {target}")
         except Exception as exc:
@@ -819,6 +905,32 @@ class App(tk.Tk):
             self.status_var.set(f"Lỗi cập nhật data: {exc}")
             messagebox.showerror("Lỗi cập nhật data", str(exc))
 
+    def start_update_check(self):
+        self.set_version_status("Đang kiểm tra", ok=False)
+        self.show_update_button(False)
+        threading.Thread(target=self.update_check_worker, daemon=True).start()
+
+    def update_check_worker(self):
+        try:
+            has_update, latest_version = check_update_available(self.metadata)
+            self.after(0, lambda: self.finish_update_check(True, has_update, latest_version))
+        except Exception as exc:
+            self.after(0, lambda exc=exc: self.finish_update_check(False, False, str(exc)))
+
+    def finish_update_check(self, success, has_update, detail):
+        if success and has_update:
+            self.set_version_status(f"Có data mới {detail}", ok=False)
+            self.show_update_button(True)
+        elif success:
+            self.set_version_status("Mới nhất", ok=True)
+            self.show_update_button(False)
+        else:
+            friendly = detail
+            if "HTTP Error 429" in detail:
+                friendly = "GitHub rate-limit tạm thời"
+            self.set_version_status(f"Chưa kiểm tra được ({friendly})", ok=False)
+            self.show_update_button(True)
+
     def start_data_update(self):
         if self.data_update_running:
             return
@@ -845,17 +957,21 @@ class App(tk.Tk):
             self.load_mapping(silent=True)
             self.refresh_sticker_showcase()
             self.set_version_status("Mới nhất", ok=True)
-            self.status_var.set(message if not changed else f"{message} Đã reload data.")
+            self.show_update_button(False)
+            if changed:
+                self.status_var.set(f"{message} Đã reload data.")
         else:
             friendly = message
             if "HTTP Error 429" in message:
                 friendly = "GitHub đang giới hạn request tạm thời (HTTP 429). Hãy thử lại sau."
             self.set_version_status("Chưa kiểm tra được", ok=False)
+            self.show_update_button(True)
             self.status_var.set(f"Lỗi cập nhật data: {friendly}")
 
     def auto_start(self):
         self.attach(show_error=False)
         self.toggle_worker()
+        self.start_update_check()
 
     def attach(self, show_error=True):
         try:
@@ -867,6 +983,18 @@ class App(tk.Tk):
             self.status_var.set("Lỗi kết nối.")
             if show_error:
                 messagebox.showerror("Lỗi kết nối", str(exc))
+
+    def attach(self, show_error=True):
+        try:
+            self.mem.attach()
+            self.status_var.set(
+                f"Đã kết nối PID {self.mem.pid}, địa chỉ chat 0x{self.mem.chat_address:X}."
+            )
+        except Exception as exc:
+            admin_msg = needs_admin_message(exc)
+            self.status_var.set(admin_msg or "Lỗi kết nối.")
+            if show_error:
+                messagebox.showerror("Lỗi kết nối", admin_msg or str(exc))
 
     def ensure_attached(self):
         if not self.mem.handle:
@@ -922,6 +1050,127 @@ class App(tk.Tk):
                 except Exception:
                     self.mem.close()
                     self.status_var.set("Đang chờ Audition hoặc quyền admin...")
+            time.sleep(POLL_SECONDS)
+
+    def worker_loop(self):
+        while not self.stop_event.is_set():
+            if self.running.get():
+                try:
+                    self.ensure_attached()
+                    text = self.mem.read_chat()
+                    new_text, hits = apply_replace_map(text, self.replace_map)
+                    if hits and new_text != text:
+                        self.mem.write_chat(new_text)
+                        self.replaced_count += sum(hit[2] for hit in hits)
+                        self.replaced_count_var.set(f"Đã thay: {self.replaced_count}")
+                except Exception as exc:
+                    self.mem.close()
+                    admin_msg = needs_admin_message(exc)
+                    self.status_var.set(
+                        admin_msg
+                        or "Đang chờ Audition. Nếu không kết nối được: chuột phải chọn Run as administrator."
+                    )
+            time.sleep(POLL_SECONDS)
+
+    def set_game_waiting(self, message=None):
+        self.game_connected = False
+        if self.game_status_label:
+            self.game_status_label.configure(style="GameWait.TLabel")
+        if message:
+            self.game_status_var.set(f"Trạng thái: {message}")
+
+    def set_game_connected(self):
+        self.game_connected = True
+        if self.game_status_label:
+            self.game_status_label.configure(style="GameOk.TLabel")
+        self.game_status_var.set("Trạng thái: ✓ Đã kết nối")
+
+    def animate_game_status(self):
+        if not self.game_connected:
+            frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+            frame = frames[self.spinner_index % len(frames)]
+            self.spinner_index += 1
+            current = self.game_status_var.get()
+            if "Run as administrator" in current:
+                self.game_status_var.set(f"Trạng thái: {frame} Cần quyền admin. Chuột phải chọn Run as administrator.")
+            else:
+                self.game_status_var.set(f"Trạng thái: {frame} Chờ kết nối game")
+        self.after(180, self.animate_game_status)
+
+    def attach(self, show_error=True):
+        try:
+            self.mem.attach()
+            self.set_game_connected()
+        except Exception as exc:
+            admin_msg = needs_admin_message(exc)
+            if admin_msg:
+                self.set_game_waiting(admin_msg)
+            else:
+                self.set_game_waiting()
+            if show_error:
+                messagebox.showerror("Lỗi kết nối", admin_msg or str(exc))
+
+    def worker_loop(self):
+        while not self.stop_event.is_set():
+            if self.running.get():
+                try:
+                    self.ensure_attached()
+                    text = self.mem.read_chat()
+                    new_text, hits = apply_replace_map(text, self.replace_map)
+                    if hits and new_text != text:
+                        self.mem.write_chat(new_text)
+                        self.replaced_count += sum(hit[2] for hit in hits)
+                        self.replaced_count_var.set(f"Đã thay: {self.replaced_count}")
+                    if not self.game_connected:
+                        self.set_game_connected()
+                except Exception as exc:
+                    self.mem.close()
+                    admin_msg = needs_admin_message(exc)
+                    if admin_msg:
+                        self.set_game_waiting(admin_msg)
+                    else:
+                        self.set_game_waiting()
+            time.sleep(POLL_SECONDS)
+
+    def toggle_worker(self):
+        if self.running.get():
+            self.load_mapping(silent=True)
+            if not self.worker or not self.worker.is_alive():
+                self.worker = threading.Thread(target=self.worker_loop, daemon=True)
+                self.worker.start()
+
+    def replace_once(self):
+        try:
+            self.ensure_attached()
+            text = self.mem.read_chat()
+            new_text, hits = apply_replace_map(text, self.replace_map)
+            if hits:
+                self.mem.write_chat(new_text)
+                self.replaced_count += sum(hit[2] for hit in hits)
+                self.status_var.set(f"Đã thay {len(hits)} loại key.")
+        except Exception as exc:
+            self.status_var.set("Lỗi thay thế.")
+            messagebox.showerror("Lỗi thay thế", str(exc))
+
+    def worker_loop(self):
+        while not self.stop_event.is_set():
+            if self.running.get():
+                try:
+                    self.ensure_attached()
+                    text = self.mem.read_chat()
+                    new_text, hits = apply_replace_map(text, self.replace_map)
+                    if hits and new_text != text:
+                        self.mem.write_chat(new_text)
+                        self.replaced_count += sum(hit[2] for hit in hits)
+                    if not self.game_connected:
+                        self.set_game_connected()
+                except Exception as exc:
+                    self.mem.close()
+                    admin_msg = needs_admin_message(exc)
+                    if admin_msg:
+                        self.set_game_waiting(admin_msg)
+                    else:
+                        self.set_game_waiting()
             time.sleep(POLL_SECONDS)
 
     def on_close(self):
