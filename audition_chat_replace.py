@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import ctypes
 import ctypes.wintypes as wt
+import base64
 import json
 import shutil
 import struct
@@ -171,9 +172,19 @@ def save_app_metadata(metadata):
 
 
 def fetch_json(url, timeout=15):
-    request = urllib.request.Request(url, headers={"User-Agent": "VibeKey/0.1"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "VibeKey/0.1",
+            "Accept": "application/vnd.github+json",
+        },
+    )
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+        data = json.loads(response.read().decode("utf-8"))
+    if isinstance(data, dict) and data.get("encoding") == "base64" and "content" in data:
+        raw = base64.b64decode(data["content"]).decode("utf-8")
+        return json.loads(raw)
+    return data
 
 
 def download_file(url, destination, timeout=60):
