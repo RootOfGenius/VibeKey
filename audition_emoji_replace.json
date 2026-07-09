@@ -403,5 +403,18 @@
       ";canh1": "&@39&",
       ";canh2": "&@40&"
     }
+  },
+  "emoji_capybara": {
+    "label": "Capybara",
+    "data": {
+      ";cbuc": "&01a&",
+      ";cbun": "&02a&",
+      ";cphoi": "&03a&",
+      ";cphi": "&04a&",
+      ";cpiu": "&05a&",
+      ";cpzz": "&06a&",
+      ";cyes": "&07a&",
+      ";cpan": "&08a&"
+    }
   }
 }
