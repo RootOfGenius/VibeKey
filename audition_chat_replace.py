@@ -3,6 +3,7 @@ import ctypes
 import ctypes.wintypes as wt
 import base64
 import json
+import ssl
 import shutil
 import struct
 import sys
@@ -15,6 +16,11 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from tkinter import messagebox, ttk
+
+try:
+    import certifi
+except Exception:
+    certifi = None
 
 
 PROCESS_NAME = "Audition.exe"
@@ -171,6 +177,12 @@ def save_app_metadata(metadata):
     )
 
 
+def https_context():
+    if certifi is not None:
+        return ssl.create_default_context(cafile=certifi.where())
+    return ssl.create_default_context()
+
+
 def fetch_json(url, timeout=15):
     request = urllib.request.Request(
         url,
@@ -179,7 +191,7 @@ def fetch_json(url, timeout=15):
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout, context=https_context()) as response:
         data = json.loads(response.read().decode("utf-8"))
     if isinstance(data, dict) and data.get("encoding") == "base64" and "content" in data:
         raw = base64.b64decode(data["content"]).decode("utf-8")
@@ -189,9 +201,22 @@ def fetch_json(url, timeout=15):
 
 def download_file(url, destination, timeout=60):
     request = urllib.request.Request(url, headers={"User-Agent": "VibeKey/0.1"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout, context=https_context()) as response:
         with open(destination, "wb") as out:
             shutil.copyfileobj(response, out)
+
+
+def friendly_update_error(message):
+    if "HTTP Error 429" in message:
+        return "GitHub đang giới hạn request tạm thời (HTTP 429). Hãy thử lại sau."
+    if "CERTIFICATE_VERIFY_FAILED" in message or "certificate verify failed" in message:
+        return (
+            "Không xác thực được chứng chỉ HTTPS khi kết nối GitHub. "
+            "Hãy kiểm tra ngày giờ Windows, mạng/proxy/antivirus, hoặc dùng bản build mới đã đóng kèm chứng chỉ."
+        )
+    if "<urlopen error" in message:
+        return f"Không kết nối được GitHub: {message}"
+    return message
 
 
 def safe_extract_zip(zip_path, target_dir):
@@ -607,7 +632,7 @@ class App(tk.Tk):
         ttk.Label(header, text=self.metadata["title"], font=("Segoe UI", 16, "bold")).pack(side="left", anchor="w")
         self.update_button = ttk.Button(
             header,
-            text="Update",
+            text="Cập nhật",
             style="Small.TButton",
             command=self.start_data_update,
         )
@@ -942,9 +967,7 @@ class App(tk.Tk):
             self.set_version_status("Mới nhất", ok=True)
             self.show_update_button(False)
         else:
-            friendly = detail
-            if "HTTP Error 429" in detail:
-                friendly = "GitHub rate-limit tạm thời"
+            friendly = friendly_update_error(detail)
             self.set_version_status(f"Chưa kiểm tra được ({friendly})", ok=False)
             self.show_update_button(True)
 
@@ -968,7 +991,7 @@ class App(tk.Tk):
     def finish_data_update(self, success, changed, message):
         self.data_update_running = False
         if self.update_button:
-            self.update_button.configure(state="normal", text="Update")
+            self.update_button.configure(state="normal", text="Cập nhật")
         if success:
             self.metadata = load_app_metadata()
             self.load_mapping(silent=True)
@@ -978,9 +1001,7 @@ class App(tk.Tk):
             if changed:
                 self.status_var.set(f"{message} Đã reload data.")
         else:
-            friendly = message
-            if "HTTP Error 429" in message:
-                friendly = "GitHub đang giới hạn request tạm thời (HTTP 429). Hãy thử lại sau."
+            friendly = friendly_update_error(message)
             self.set_version_status("Chưa kiểm tra được", ok=False)
             self.show_update_button(True)
             self.status_var.set(f"Lỗi cập nhật data: {friendly}")
